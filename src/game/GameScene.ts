@@ -1,10 +1,12 @@
 import Phaser from "phaser";
 
-const TILE = 40;
-const COLS = 15;
-const ROWS = 13;
-const OX = 60;
-const OY = 100;
+const TILE = 32;
+const COLS = 19;
+const ROWS = 15;
+const OX = 16;
+const OY = 72;
+const W = OX * 2 + COLS * TILE; // 640
+const H = OY + ROWS * TILE + 16; // 568
 
 type Cell = 0 | 1 | 2; // empty, hard, soft
 type PowerKind = "bomb" | "range" | "speed";
@@ -13,7 +15,7 @@ interface Power {
   x: number;
   y: number;
   kind: PowerKind;
-  gfx: Phaser.GameObjects.Arc;
+  gfx: Phaser.GameObjects.Container;
 }
 
 interface Bomb {
@@ -29,7 +31,7 @@ interface SkyDrop {
   x: number;
   y: number;
   timer: number;
-  shadow: Phaser.GameObjects.Ellipse;
+  shadow: Phaser.GameObjects.Image;
 }
 
 interface Fighter {
@@ -43,7 +45,6 @@ interface Fighter {
   maxBombs: number;
   range: number;
   speed: number;
-  color: number;
   gfx: Phaser.GameObjects.Container;
   moveCd: number;
   bombCd: number;
@@ -53,6 +54,7 @@ interface Fighter {
 export class GameScene extends Phaser.Scene {
   private grid: Cell[][] = [];
   private softGfx = new Map<string, Phaser.GameObjects.Rectangle>();
+  private hardGfx = new Map<string, Phaser.GameObjects.GameObject>();
   private powers: Power[] = [];
   private bombs: Bomb[] = [];
   private sky: SkyDrop[] = [];
@@ -65,8 +67,10 @@ export class GameScene extends Phaser.Scene {
     right: Phaser.Input.Keyboard.Key;
     bomb: Phaser.Input.Keyboard.Key;
   };
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private hud!: Phaser.GameObjects.Text;
   private overlay!: Phaser.GameObjects.Container;
+  private overlayTitle!: Phaser.GameObjects.Text;
   private elapsed = 0;
   private skyTimer = 0;
   private skyInterval = 4200;
@@ -77,16 +81,38 @@ export class GameScene extends Phaser.Scene {
     super("Game");
   }
 
+  preload(): void {
+    this.load.image("p1-body", "axie/p1-body.png");
+    this.load.image("p1-eyes", "axie/p1-eyes.png");
+    this.load.image("p1-tail", "axie/p1-tail.png");
+    this.load.image("ai-body", "axie/ai-body.png");
+    this.load.image("ai-eyes", "axie/ai-eyes.png");
+    this.load.image("ai-tail", "axie/ai-tail.png");
+    this.load.image("sky-shadow", "axie/shadow.png");
+    this.load.image("sky-ball", "axie/ball.png");
+  }
+
   create(): void {
     this.cameras.main.setBackgroundColor(0x1a2430);
+    this.elapsed = 0;
+    this.skyTimer = 0;
+    this.skyInterval = 4200;
+    this.over = false;
+    this.powers = [];
+    this.bombs = [];
+    this.sky = [];
+    this.softGfx.clear();
+    this.hardGfx.clear();
+
     this.buildGrid();
     this.drawBoard();
     this.spawnFighters();
     this.bindInput();
+
     this.hud = this.add
-      .text(360, 28, "", {
+      .text(W / 2, 22, "", {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: "16px",
+        fontSize: "15px",
         color: "#e8f0f8",
         fontStyle: "700",
         align: "center",
@@ -94,13 +120,14 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(50);
     this.add
-      .text(360, 54, "WASD / arrows move · Space bomb · R restart", {
+      .text(W / 2, 46, "WASD / arrows move · Space bomb · R restart", {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: "12px",
+        fontSize: "11px",
         color: "#8aa0b8",
       })
       .setOrigin(0.5)
       .setDepth(50);
+
     this.buildOverlay();
     this.started = true;
     this.refreshHud();
@@ -116,7 +143,6 @@ export class GameScene extends Phaser.Scene {
     this.tickAi(d);
     this.refreshHud();
   }
-
 
   private buildGrid(): void {
     this.grid = [];
@@ -140,7 +166,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   private isSpawnSafe(x: number, y: number): boolean {
-    // clear corners for fighters
     const corners = [
       [1, 1],
       [2, 1],
@@ -152,19 +177,26 @@ export class GameScene extends Phaser.Scene {
     return corners.some(([cx, cy]) => cx === x && cy === y);
   }
 
+  private cellCenter(x: number, y: number): { px: number; py: number } {
+    return {
+      px: OX + x * TILE + TILE / 2,
+      py: OY + y * TILE + TILE / 2,
+    };
+  }
+
   private drawBoard(): void {
     for (let y = 0; y < ROWS; y++) {
       for (let x = 0; x < COLS; x++) {
-        const px = OX + x * TILE + TILE / 2;
-        const py = OY + y * TILE + TILE / 2;
+        const { px, py } = this.cellCenter(x, y);
         const floor = (x + y) % 2 === 0 ? 0x2a3a48 : 0x243442;
         this.add.rectangle(px, py, TILE - 1, TILE - 1, floor).setDepth(0);
         const cell = this.grid[y][x];
         if (cell === 1) {
-          this.add
+          const hard = this.add
             .rectangle(px, py, TILE - 4, TILE - 4, 0x5a6a78)
             .setStrokeStyle(2, 0x3a4a58)
             .setDepth(2);
+          this.hardGfx.set(`${x},${y}`, hard);
         } else if (cell === 2) {
           const soft = this.add
             .rectangle(px, py, TILE - 6, TILE - 6, 0xc4a574)
@@ -177,22 +209,32 @@ export class GameScene extends Phaser.Scene {
   }
 
   private spawnFighters(): void {
-    this.p1 = this.makeFighter("p1", 1, 1, 0x6ec8ff);
-    this.ai = this.makeFighter("ai", COLS - 2, ROWS - 2, 0xff7a9a);
+    this.p1 = this.makeFighter("p1", 1, 1);
+    this.ai = this.makeFighter("ai", COLS - 2, ROWS - 2);
   }
 
-  private makeFighter(
-    id: "p1" | "ai",
-    x: number,
-    y: number,
-    color: number,
-  ): Fighter {
-    const px = OX + x * TILE + TILE / 2;
-    const py = OY + y * TILE + TILE / 2;
-    const body = this.add.circle(0, 0, 14, color).setStrokeStyle(2, 0xffffff);
-    const eyeL = this.add.circle(-5, -3, 3, 0x102028);
-    const eyeR = this.add.circle(5, -3, 3, 0x102028);
-    const gfx = this.add.container(px, py, [body, eyeL, eyeR]).setDepth(20);
+  private makeFighter(id: "p1" | "ai", x: number, y: number): Fighter {
+    const { px, py } = this.cellCenter(x, y);
+    const prefix = id;
+    const target = 28; // fit ~28px in 32 tile
+
+    const bodyKey = `${prefix}-body`;
+    const eyesKey = `${prefix}-eyes`;
+    const tailKey = `${prefix}-tail`;
+
+    const bodyTex = this.textures.get(bodyKey).getSourceImage() as HTMLImageElement;
+    const bodyScale = target / Math.max(bodyTex.width, bodyTex.height);
+
+    const tail = this.add.image(-target * 0.38, 2, tailKey).setOrigin(0.5);
+    tail.setScale(bodyScale * 0.85);
+
+    const body = this.add.image(0, 0, bodyKey).setOrigin(0.5);
+    body.setScale(bodyScale);
+
+    const eyes = this.add.image(0, -target * 0.12, eyesKey).setOrigin(0.5);
+    eyes.setScale(bodyScale * 1.05);
+
+    const gfx = this.add.container(px, py, [tail, body, eyes]).setDepth(20);
     return {
       id,
       x,
@@ -204,15 +246,12 @@ export class GameScene extends Phaser.Scene {
       maxBombs: 1,
       range: 1,
       speed: 1,
-      color,
       gfx,
       moveCd: 0,
       bombCd: 0,
       aiThink: 0,
     };
   }
-
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
 
   private bindInput(): void {
     const kb = this.input.keyboard!;
@@ -257,7 +296,6 @@ export class GameScene extends Phaser.Scene {
     this.ai.aiThink -= dt;
     if (this.ai.moveCd > 0) return;
 
-    // avoid sky shadows and bombs; chase player sometimes
     const dirs: [number, number][] = [
       [1, 0],
       [-1, 0],
@@ -273,12 +311,9 @@ export class GameScene extends Phaser.Scene {
       const ny = this.ai.y + dy;
       if (!this.walkable(nx, ny)) continue;
       let score = Math.random();
-      // prefer away from danger
       if (this.cellDanger(nx, ny)) score -= 5;
       if (this.cellDanger(this.ai.x, this.ai.y)) score += 3;
-      // approach player
-      const dist =
-        Math.abs(nx - this.p1.x) + Math.abs(ny - this.p1.y);
+      const dist = Math.abs(nx - this.p1.x) + Math.abs(ny - this.p1.y);
       score -= dist * 0.15;
       if (score > bestScore) {
         bestScore = score;
@@ -288,7 +323,6 @@ export class GameScene extends Phaser.Scene {
     if (best) this.tryMove(this.ai, best[0], best[1]);
     this.ai.moveCd = 160 / this.ai.speed;
 
-    // bomb if near player or soft block
     if (this.ai.bombCd <= 0 && Math.random() < 0.35) {
       const near =
         Math.abs(this.ai.x - this.p1.x) + Math.abs(this.ai.y - this.p1.y) <=
@@ -348,8 +382,11 @@ export class GameScene extends Phaser.Scene {
     if (!this.walkable(nx, ny)) return;
     f.x = nx;
     f.y = ny;
-    f.px = OX + nx * TILE + TILE / 2;
-    f.py = OY + ny * TILE + TILE / 2;
+    const c = this.cellCenter(nx, ny);
+    f.px = c.px;
+    f.py = c.py;
+    // face direction: flip container when moving left/right
+    if (dx !== 0) f.gfx.setScale(dx < 0 ? -1 : 1, 1);
     this.tweens.add({
       targets: f.gfx,
       x: f.px,
@@ -363,10 +400,9 @@ export class GameScene extends Phaser.Scene {
     if (!f.alive) return;
     if (f.bombs >= f.maxBombs) return;
     if (this.bombs.some((b) => b.x === f.x && b.y === f.y)) return;
-    const px = OX + f.x * TILE + TILE / 2;
-    const py = OY + f.y * TILE + TILE / 2;
-    const core = this.add.circle(0, 0, 12, 0x222222).setStrokeStyle(2, 0xffcc44);
-    const fuse = this.add.circle(6, -10, 3, 0xff6644);
+    const { px, py } = this.cellCenter(f.x, f.y);
+    const core = this.add.circle(0, 0, 10, 0x222222).setStrokeStyle(2, 0xffcc44);
+    const fuse = this.add.circle(5, -8, 2.5, 0xff6644);
     const gfx = this.add.container(px, py, [core, fuse]).setDepth(15);
     const bomb: Bomb = {
       x: f.x,
@@ -436,10 +472,27 @@ export class GameScene extends Phaser.Scene {
   private spawnPower(x: number, y: number): void {
     const kinds: PowerKind[] = ["bomb", "range", "speed"];
     const kind = kinds[Math.floor(Math.random() * kinds.length)];
-    const colors = { bomb: 0xffdd55, range: 0x66ffaa, speed: 0x66aaff };
-    const px = OX + x * TILE + TILE / 2;
-    const py = OY + y * TILE + TILE / 2;
-    const gfx = this.add.circle(px, py, 9, colors[kind]).setDepth(8);
+    const colors: Record<PowerKind, number> = {
+      bomb: 0xffdd55,
+      range: 0x66ffaa,
+      speed: 0x66aaff,
+    };
+    const labels: Record<PowerKind, string> = {
+      bomb: "B",
+      range: "R",
+      speed: "S",
+    };
+    const { px, py } = this.cellCenter(x, y);
+    const disc = this.add.circle(0, 0, 8, colors[kind]).setStrokeStyle(1, 0xffffff);
+    const label = this.add
+      .text(0, 0, labels[kind], {
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: "10px",
+        color: "#102028",
+        fontStyle: "700",
+      })
+      .setOrigin(0.5);
+    const gfx = this.add.container(px, py, [disc, label]).setDepth(8);
     this.powers.push({ x, y, kind, gfx });
   }
 
@@ -456,9 +509,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private blastFx(x: number, y: number): void {
-    const px = OX + x * TILE + TILE / 2;
-    const py = OY + y * TILE + TILE / 2;
-    const flame = this.add.rectangle(px, py, TILE - 8, TILE - 8, 0xff8844, 0.85).setDepth(12);
+    const { px, py } = this.cellCenter(x, y);
+    const flame = this.add
+      .rectangle(px, py, TILE - 8, TILE - 8, 0xff8844, 0.85)
+      .setDepth(12);
     this.tweens.add({
       targets: flame,
       alpha: 0,
@@ -470,7 +524,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   private tickSky(dt: number): void {
-    // warm-up 8s then rain
     if (this.elapsed < 8000) return;
     this.skyInterval = Math.max(1400, 4200 - (this.elapsed - 8000) * 0.08);
     this.skyTimer -= dt;
@@ -483,13 +536,13 @@ export class GameScene extends Phaser.Scene {
 
     for (const s of [...this.sky]) {
       s.timer -= dt;
-      s.shadow.setAlpha(0.25 + 0.35 * Math.sin(this.elapsed / 100));
+      const pulse = 0.35 + 0.25 * Math.sin(this.elapsed / 100);
+      s.shadow.setAlpha(pulse);
       if (s.timer <= 0) this.impactSky(s);
     }
   }
 
   private spawnSkyDrop(): void {
-    // pick empty walkable cell not occupied by hard, prefer soft or empty
     const candidates: [number, number][] = [];
     for (let y = 1; y < ROWS - 1; y++) {
       for (let x = 1; x < COLS - 1; x++) {
@@ -500,10 +553,11 @@ export class GameScene extends Phaser.Scene {
     }
     if (candidates.length === 0) return;
     const [x, y] = Phaser.Utils.Array.GetRandom(candidates);
-    const px = OX + x * TILE + TILE / 2;
-    const py = OY + y * TILE + TILE / 2;
+    const { px, py } = this.cellCenter(x, y);
     const shadow = this.add
-      .ellipse(px, py + 4, TILE * 0.7, TILE * 0.35, 0x000000, 0.45)
+      .image(px, py + 4, "sky-shadow")
+      .setDisplaySize(TILE * 0.85, TILE * 0.35)
+      .setAlpha(0.45)
       .setDepth(5);
     this.sky.push({ x, y, timer: 1200, shadow });
   }
@@ -512,38 +566,38 @@ export class GameScene extends Phaser.Scene {
     const i = this.sky.indexOf(s);
     if (i >= 0) this.sky.splice(i, 1);
     s.shadow.destroy();
-    const px = OX + s.x * TILE + TILE / 2;
-    const py = OY + s.y * TILE + TILE / 2 - 80;
-    const block = this.add
-      .rectangle(px, py, TILE - 6, TILE - 6, 0x8a90a0)
-      .setStrokeStyle(2, 0x4a5060)
+    const { px, py } = this.cellCenter(s.x, s.y);
+    const ball = this.add
+      .image(px, py - 90, "sky-ball")
+      .setDisplaySize(TILE - 4, TILE - 4)
       .setDepth(25);
     this.tweens.add({
-      targets: block,
-      y: OY + s.y * TILE + TILE / 2,
+      targets: ball,
+      y: py,
       duration: 180,
       ease: "Quad.in",
       onComplete: () => {
-        // become hard block if empty/soft
         if (this.grid[s.y][s.x] === 2) this.destroySoft(s.x, s.y);
+        // remove power on cell if any
+        for (let pi = this.powers.length - 1; pi >= 0; pi--) {
+          const p = this.powers[pi];
+          if (p.x === s.x && p.y === s.y) {
+            p.gfx.destroy();
+            this.powers.splice(pi, 1);
+          }
+        }
         if (this.grid[s.y][s.x] === 0) {
           this.grid[s.y][s.x] = 1;
-          this.add
-            .rectangle(
-              OX + s.x * TILE + TILE / 2,
-              OY + s.y * TILE + TILE / 2,
-              TILE - 4,
-              TILE - 4,
-              0x5a6a78,
-            )
-            .setStrokeStyle(2, 0x3a4a58)
+          const wall = this.add
+            .image(px, py, "sky-ball")
+            .setDisplaySize(TILE - 4, TILE - 4)
             .setDepth(2);
+          this.hardGfx.set(`${s.x},${s.y}`, wall);
         }
-        block.destroy();
+        ball.destroy();
         for (const f of [this.p1, this.ai]) {
           if (f.alive && f.x === s.x && f.y === s.y) this.kill(f, "skyfall");
         }
-        // crush bombs
         for (const b of [...this.bombs]) {
           if (b.x === s.x && b.y === s.y) this.explode(b);
         }
@@ -557,7 +611,8 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({
       targets: f.gfx,
       alpha: 0,
-      scale: 0.3,
+      scaleX: 0.3 * Math.sign(f.gfx.scaleX || 1),
+      scaleY: 0.3,
       duration: 280,
       onComplete: () => f.gfx.setVisible(false),
     });
@@ -576,37 +631,46 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildOverlay(): void {
-    const bg = this.add.rectangle(360, 400, 420, 200, 0x0e1520, 0.92).setStrokeStyle(2, 0x6ec8ff);
-    const title = this.add
-      .text(360, 360, "", {
+    const bg = this.add
+      .rectangle(W / 2, H / 2, 400, 160, 0x0e1520, 0.92)
+      .setStrokeStyle(2, 0x6ec8ff);
+    this.overlayTitle = this.add
+      .text(W / 2, H / 2 - 24, "", {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: "28px",
+        fontSize: "26px",
         color: "#e8f0f8",
         fontStyle: "700",
       })
       .setOrigin(0.5);
     const sub = this.add
-      .text(360, 410, "Press R to rematch", {
+      .text(W / 2, H / 2 + 24, "Press R to rematch", {
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
         fontSize: "14px",
         color: "#8aa0b8",
       })
       .setOrigin(0.5);
-    this.overlay = this.add.container(0, 0, [bg, title, sub]).setDepth(100).setVisible(false);
-    (this.overlay as Phaser.GameObjects.Container & { title?: Phaser.GameObjects.Text }).title = title;
+    this.overlay = this.add
+      .container(0, 0, [bg, this.overlayTitle, sub])
+      .setDepth(100)
+      .setVisible(false);
   }
 
   private showOverlay(msg: string): void {
-    const t = (this.overlay as Phaser.GameObjects.Container & { title?: Phaser.GameObjects.Text }).title;
-    t?.setText(msg);
+    this.overlayTitle.setText(msg);
     this.overlay.setVisible(true);
   }
 
   private refreshHud(): void {
     const t = Math.floor(this.elapsed / 1000);
-    const sky = this.elapsed < 8000 ? `Skyfall in ${Math.ceil((8000 - this.elapsed) / 1000)}s` : "SKYFALL";
+    const sky =
+      this.elapsed < 8000
+        ? `Skyfall in ${Math.ceil((8000 - this.elapsed) / 1000)}s`
+        : "SKYFALL";
     this.hud.setText(
       `Skyfall Bomber  ·  ${t}s  ·  ${sky}\nYou B${this.p1.maxBombs} R${this.p1.range}  |  AI B${this.ai.maxBombs} R${this.ai.range}`,
     );
   }
 }
+
+export const GAME_WIDTH = W;
+export const GAME_HEIGHT = H;
