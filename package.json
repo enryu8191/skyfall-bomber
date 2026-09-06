@@ -9,7 +9,6 @@
     "preview": "vite preview --port 3002 --host"
   },
   "dependencies": {
-    "@axieinfinity/mixer": "^1.4.9",
     "phaser": "^4.2.1"
   },
   "devDependencies": {
